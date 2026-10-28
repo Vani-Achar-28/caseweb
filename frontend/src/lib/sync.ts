@@ -7,15 +7,35 @@
  *  - After that, every save or delete is sent to the database too.
  *  - If the backend is not running, the app keeps working from the browser
  *    and sends the changes later.
+ *
+ * Documents live in a WORKSPACE on the backend:
+ *  - on your own computer (localhost) the workspace is "local", shared by all your browsers
+ *  - on the public website every visitor gets a private workspace, so visitors never
+ *    see or change each other's cases. Everyone starts with the sample case.
  */
 const API = (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_API_URL ?? "http://127.0.0.1:8000";
 const PREFIX = "caseweb.";
 const DIRTY = "caseweb-sync.dirty";       // keys changed here but not yet saved in the database
 const MIGRATED = "caseweb-sync.migrated"; // set after the first sync with the database
+const WS_KEY = "caseweb-sync.ws";         // this visitor's private workspace id
 
 // the browser's own save / delete, kept before we wrap them
 const rawSet = Storage.prototype.setItem;
 const rawRemove = Storage.prototype.removeItem;
+
+/** Which workspace on the backend this browser uses. */
+function workspaceId(): string {
+  const fixed = (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_WORKSPACE;
+  if (fixed) return fixed;
+  if (location.hostname === "localhost" || location.hostname === "127.0.0.1") return "local";
+  let id = localStorage.getItem(WS_KEY);
+  if (!id) {
+    id = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
+    rawSet.call(localStorage, WS_KEY, id);
+  }
+  return id;
+}
+const WS = workspaceId();
 
 let dirty = new Set<string>();
 let flushing = false;
@@ -57,8 +77,8 @@ async function call(path: string, init?: RequestInit): Promise<Response> {
 async function send(key: string, value: string | null): Promise<boolean> {
   try {
     const r = value === null
-      ? await call(`/api/kv?key=${encodeURIComponent(key)}`, { method: "DELETE" })
-      : await call("/api/kv", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, value }) });
+      ? await call(`/api/kv?ws=${encodeURIComponent(WS)}&key=${encodeURIComponent(key)}`, { method: "DELETE" })
+      : await call("/api/kv", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ws: WS, key, value }) });
     return r.ok;
   } catch {
     return false;
@@ -139,7 +159,7 @@ export async function startSync(): Promise<void> {
 
   let server: Record<string, string>;
   try {
-    const r = await call("/api/kv");
+    const r = await call(`/api/kv?ws=${encodeURIComponent(WS)}`);
     if (!r.ok) throw new Error("bad status " + r.status);
     server = (await r.json()) as Record<string, string>;
   } catch {
@@ -155,10 +175,12 @@ export async function startSync(): Promise<void> {
   for (const [key, value] of Object.entries(server)) {
     if (!dirty.has(key)) rawSet.call(localStorage, key, value);
   }
-  // 2. documents that only exist in this browser: upload them the first time, otherwise they were deleted elsewhere
+  // 2. documents that only exist in this browser: upload them the first time, or when the database is empty
+  //    (it was reset), otherwise they were deleted from another browser
+  const databaseEmpty = Object.keys(server).length === 0;
   for (const key of here) {
     if (key in server || dirty.has(key)) continue;
-    if (firstTime) dirty.add(key);
+    if (firstTime || databaseEmpty) dirty.add(key);
     else rawRemove.call(localStorage, key);
   }
   rawSet.call(localStorage, MIGRATED, "1");

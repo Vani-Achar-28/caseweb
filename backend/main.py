@@ -78,6 +78,7 @@ class LinkIn(BaseModel):
 
 
 class KvIn(BaseModel):
+    ws: str = Field(min_length=3, max_length=64, description='Workspace id, for example "local"')
     key: str = Field(min_length=1, max_length=200, description='For example "caseweb.c.demo.data"')
     value: str = Field(description="The saved document, as text (JSON)")
 
@@ -219,10 +220,13 @@ def move_item(case_id: int, item_id: str, body: PositionIn):
 
 # ---------------------------------------------------------------- saved cases of the React app
 @app.get("/api/kv", tags=["workspace"])
-def workspace_all():
-    """Every saved document, as {key: value}. The React app loads this when it starts."""
+def workspace_all(ws: str):
+    """Every saved document of one workspace, as {key: value}. The React app loads this when it starts."""
     with db.connect() as con:
-        return kv.list_all(con)
+        try:
+            return kv.list_all(con, ws)
+        except ValueError as e:
+            raise bad(e)
 
 
 @app.put("/api/kv", tags=["workspace"])
@@ -230,7 +234,7 @@ def workspace_put(body: KvIn):
     """Save (or replace) one document."""
     with db.connect() as con:
         try:
-            kv.put(con, body.key, body.value)
+            kv.put(con, body.ws, body.key, body.value)
         except ValueError as e:
             raise bad(e)
         except OverflowError as e:
@@ -239,11 +243,11 @@ def workspace_put(body: KvIn):
 
 
 @app.delete("/api/kv", tags=["workspace"])
-def workspace_delete(key: str):
+def workspace_delete(ws: str, key: str):
     """Forget one document."""
     with db.connect() as con:
         try:
-            return {"deleted": kv.delete(con, key)}
+            return {"deleted": kv.delete(con, ws, key)}
         except ValueError as e:
             raise bad(e)
 
